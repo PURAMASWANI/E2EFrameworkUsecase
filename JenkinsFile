@@ -1,0 +1,111 @@
+pipeline {
+    agent any
+
+    tools {
+        maven 'Maven 3.8.4'      // Name as configured in Jenkins global tools
+        jdk 'JDK 11'             // Name as configured in Jenkins global tools
+    }
+
+    parameters {
+        choice(
+            name: 'BROWSER',
+            choices: ['chrome', 'firefox', 'edge'],
+            description: 'Browser to run tests on'
+        )
+        string(
+            name: 'TEST_SUITE',
+            defaultValue: 'testng.xml',
+            description: 'TestNG suite file (relative to project root)'
+        )
+        choice(
+            name: 'ENVIRONMENT',
+            choices: ['qa', 'uat', 'prod'],
+            description: 'Target environment'
+        )
+        booleanParam(
+            name: 'HEADLESS',
+            defaultValue: true,
+            description: 'Run browser in headless mode?'
+        )
+    }
+
+    environment {
+        // Optional: override config.properties via environment variables
+        // If your framework reads system properties, we pass them via MAVEN_OPTS
+        MAVEN_OPTS = '-Xmx1024m'
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                // Checkout code from the same branch that triggered the build
+                checkout scm
+            }
+        }
+
+        stage('Clean & Compile') {
+            steps {
+                sh 'mvn clean compile'
+            }
+        }
+
+        stage('Run Tests') {
+            steps {
+                script {
+                    // Run tests with Maven, passing parameters as system properties
+                    sh """
+                        mvn test \
+                            -DsuiteXmlFile=${params.TEST_SUITE} \
+                            -Dbrowser=${params.BROWSER} \
+                            -Denv=${params.ENVIRONMENT} \
+                            -Dheadless=${params.HEADLESS} \
+                            -Dmaven.test.failure.ignore=true
+                    """
+                }
+            }
+            post {
+                always {
+                    // Publish JUnit test results (for trend charts and test history)
+                    junit 'target/surefire-reports/*.xml'
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            // Archive logs and screenshots (if any)
+            archiveArtifacts artifacts: 'target/logs/**', fingerprint: true, allowEmptyArchive: true
+            archiveArtifacts artifacts: 'target/screenshots/**', fingerprint: true, allowEmptyArchive: true
+
+            // Publish Extent Report HTML
+            publishHTML([
+                reportDir: 'target',
+                reportFiles: 'ExtentReport.html',
+                reportName: 'Extent Test Report',
+                keepAll: true,
+                allowMissing: true
+            ])
+        }
+
+        failure {
+            // Send email notification on failure
+            emailext(
+                to: 'qa-team@example.com',
+                subject: "Build failed: ${env.JOB_NAME} - ${env.BUILD_NUMBER}",
+                body: """<p>Check console output at <a href="${env.BUILD_URL}">${env.BUILD_URL}</a></p>
+                         <p>Extent Report: <a href="${env.BUILD_URL}Extent_20Test_20Report">View Report</a></p>""",
+                mimeType: 'text/html'
+            )
+        }
+
+        unstable {
+            // Optional: notify on unstable (test failures)
+            emailext(
+                to: 'qa-team@example.com',
+                subject: "Build unstable: ${env.JOB_NAME} - ${env.BUILD_NUMBER}",
+                body: "Some tests failed. Check the reports."
+            )
+        }
+    }
+}
